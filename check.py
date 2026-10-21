@@ -196,7 +196,7 @@ def ensure_matplotlib():
     try:
         import matplotlib  # noqa: F401
     except ImportError:
-        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "matplotlib"], check=False)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", "matplotlib"], check=False)
 
 
 def make_chart(state, hours):
@@ -297,7 +297,12 @@ def listen(state, seconds):
             m = u.get("message") or {}
             if str(m.get("chat", {}).get("id")) != CHAT:
                 continue  # чужие сообщения игнорируем
-            handle(m.get("text"), state)
+            try:
+                handle(m.get("text"), state)
+            except Exception as e:  # noqa: BLE001
+                # Сбой одной кнопки не должен останавливать бота
+                print("ошибка обработки кнопки:", type(e).__name__)
+                send("Не получилось выполнить команду, попробуйте ещё раз чуть позже.")
         state["offset"] = offset
         save(state)
 
