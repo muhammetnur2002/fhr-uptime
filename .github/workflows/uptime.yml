@@ -11,10 +11,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: state.json
           key: uptime-state-${{ github.run_id }}
@@ -23,3 +23,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Состояние (история за 7 суток) сохраняем всегда, даже если проверка упала
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: uptime-state-${{ github.run_id }}
