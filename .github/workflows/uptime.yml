@@ -1,10 +1,12 @@
 name: Проверка сайтов
 on:
+  # Расписание нужно как страховка: основной цикл держится за счёт самозапуска в конце
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 permissions:
   contents: read
+  actions: write
 concurrency:
   group: uptime
   cancel-in-progress: false
@@ -13,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
         with:
@@ -35,3 +38,15 @@ jobs:
         with:
           path: state.json
           key: uptime-state-${{ github.run_id }}
+      # Следующий запуск стартует сразу же, чтобы бот не «спал» между запусками расписания.
+      # Защита от быстрого зацикливания: только если этот запуск шёл дольше двух минут.
+      - name: Следующий запуск
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ $(( $(date +%s) - START )) -gt 120 ]; then
+            gh workflow run uptime.yml --repo "${{ github.repository }}"
+          else
+            echo "Запуск был коротким, цепочку не продолжаем (подхватит расписание)"
+          fi

@@ -216,7 +216,7 @@ def make_chart(state, hours):
     for name, c in zip(names, colors):
         pairs = [(t, h["s"][name][1]) for t, h in zip(ts, pts) if name in h["s"] and h["s"][name][1] is not None]
         if pairs:
-            ax1.plot([p[0] for p in pairs], [p[1] for p in pairs], color=c, linewidth=1.4, label=name)
+            ax1.plot([p[0] for p in pairs], [p[1] for p in pairs], color=c, linewidth=1.4, marker="o" if len(pairs) < 60 else None, markersize=3, label=name)
     ax1.axhline(1, color="#059669", linewidth=0.8, linestyle="--")
     ax1.axhline(3, color="#dc2626", linewidth=0.8, linestyle="--")
     ax1.set_ylabel("Ответ сайта, секунд")
@@ -237,7 +237,10 @@ def make_chart(state, hours):
     ax2.set_yticks(range(len(names)))
     ax2.set_yticklabels(names, fontsize=8)
     ax2.invert_yaxis()
-    ax2.set_xlim(mdates.date2num(datetime.fromtimestamp(start, MSK)), mdates.date2num(datetime.fromtimestamp(now, MSK)))
+    # Ось начинается там, где есть данные: на недельном графике при истории в час не должно быть пустой недели
+    first = pts[0]["t"] if pts else start
+    xmin = max(start, first - max(600, (now - first) * 0.03))
+    ax2.set_xlim(mdates.date2num(datetime.fromtimestamp(xmin, MSK)), mdates.date2num(datetime.fromtimestamp(now, MSK)))
     ax2.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M" if hours <= 24 else "%d.%m", tz=MSK))
     ax2.set_xlabel("зелёное: отвечал   красное: не отвечал   серое: данных нет")
     fig.tight_layout()
