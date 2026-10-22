@@ -24,7 +24,9 @@ KEEP = timedelta(days=7)
 LISTEN_SECONDS = 240
 MSK = timezone(timedelta(hours=3))
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
+# Разрешённые чаты: один или несколько id через запятую; уведомления идут всем, кнопки отвечают каждому из них
+CHATS = [c.strip() for c in str(os.environ.get("TELEGRAM_CHAT_ID", "")).split(",") if c.strip()]
+CHAT = CHATS[0] if CHATS else ""
 
 BTN_NOW, BTN_DAY, BTN_WEEK, BTN_HELP = "📊 Сейчас", "📈 График за сутки", "📅 График за неделю", "ℹ️ Что это значит"
 KEYBOARD = {"keyboard": [[{"text": BTN_NOW}, {"text": BTN_DAY}], [{"text": BTN_WEEK}, {"text": BTN_HELP}]], "resize_keyboard": True}
@@ -72,14 +74,16 @@ def api(method, params=None, files=None, timeout=40):
         return {}
 
 
-def send(text, keyboard=True):
-    if not TOKEN or not CHAT:
+def send(text, keyboard=True, chat=None):
+    """Без chat: всем разрешённым (уведомления). С chat: только этому чату (ответ на кнопку)."""
+    if not TOKEN or not CHATS:
         print("Telegram не настроен:", text)
         return
-    p = {"chat_id": CHAT, "text": text}
-    if keyboard:
-        p["reply_markup"] = json.dumps(KEYBOARD)
-    api("sendMessage", p)
+    for target in ([chat] if chat else CHATS):
+        p = {"chat_id": target, "text": text}
+        if keyboard:
+            p["reply_markup"] = json.dumps(KEYBOARD)
+        api("sendMessage", p)
 
 
 def fetch(url):
@@ -266,24 +270,24 @@ def chart_caption(state, hours):
     return "\n".join(lines)[:1000]
 
 
-def send_chart(state, hours):
+def send_chart(state, hours, chat):
     img = make_chart(state, hours)
-    r = api("sendPhoto", {"chat_id": CHAT, "caption": chart_caption(state, hours), "reply_markup": json.dumps(KEYBOARD)},
+    r = api("sendPhoto", {"chat_id": chat, "caption": chart_caption(state, hours), "reply_markup": json.dumps(KEYBOARD)},
             files={"photo": ("chart.png", img, "image/png")}, timeout=60)
     if not r.get("ok"):
-        send("Не получилось нарисовать график, попробуйте позже.")
+        send("Не получилось нарисовать график, попробуйте позже.", chat=chat)
 
 
-def handle(text, state):
+def handle(text, state, chat):
     t = (text or "").strip()
     if t in (BTN_NOW, "/status"):
-        send(status_text(state))
+        send(status_text(state), chat=chat)
     elif t in (BTN_DAY, "/day"):
-        send_chart(state, 24)
+        send_chart(state, 24, chat)
     elif t in (BTN_WEEK, "/week"):
-        send_chart(state, 24 * 7)
+        send_chart(state, 24 * 7, chat)
     elif t in (BTN_HELP, "/help"):
-        send(HELP)
+        send(HELP, chat=chat)
     elif t == "/start":
         send("Привет! Я слежу за сайтами Fattakhov HR Agency. Кнопки внизу: состояние, графики и пояснение.\n\n" + status_text(state))
 
@@ -298,14 +302,18 @@ def listen(state, seconds):
         for u in r.get("result", []):
             offset = u["update_id"] + 1
             m = u.get("message") or {}
-            if str(m.get("chat", {}).get("id")) != CHAT:
-                continue  # чужие сообщения игнорируем
+            chat_id = str(m.get("chat", {}).get("id"))
+            if chat_id not in CHATS:
+                # Чужому не показываем данные, только его номер: его можно передать владельцу, чтобы открыть доступ
+                if chat_id != "None" and m.get("text"):
+                    send(f"Доступ к мониторингу не открыт. Ваш номер: {chat_id}. Передайте его владельцу проекта.", keyboard=False, chat=chat_id)
+                continue
             try:
-                handle(m.get("text"), state)
+                handle(m.get("text"), state, chat_id)
             except Exception as e:  # noqa: BLE001
                 # Сбой одной кнопки не должен останавливать бота
                 print("ошибка обработки кнопки:", type(e).__name__)
-                send("Не получилось выполнить команду, попробуйте ещё раз чуть позже.")
+                send("Не получилось выполнить команду, попробуйте ещё раз чуть позже.", chat=chat_id)
         state["offset"] = offset
         save(state)
 
@@ -315,7 +323,7 @@ def main():
     run_check(state)
     save(state)
     print("проблем:", len(state.get("problems", {})), state.get("problems", {}))
-    if TOKEN and CHAT and "--no-listen" not in sys.argv:
+    if TOKEN and CHATS and "--no-listen" not in sys.argv:
         api("setMyCommands", {"commands": json.dumps([
             {"command": "status", "description": "Состояние сейчас"},
             {"command": "day", "description": "График за сутки"},
