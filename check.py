@@ -8,7 +8,7 @@
      «что это значит». Отвечает только владельцу (TELEGRAM_CHAT_ID).
 Состояние и история (7 суток) лежат в state.json (кэш Actions). Секреты берутся из окружения и не печатаются.
 """
-import io, json, os, socket, ssl, subprocess, sys, time, urllib.parse, urllib.request
+import hmac, io, json, os, socket, ssl, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
 SITES = {
@@ -27,6 +27,10 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 # Разрешённые чаты: один или несколько id через запятую; уведомления идут всем, кнопки отвечают каждому из них
 CHATS = [c.strip() for c in str(os.environ.get("TELEGRAM_CHAT_ID", "")).split(",") if c.strip()]
 CHAT = CHATS[0] if CHATS else ""
+PASSWORD = os.environ.get("TELEGRAM_BOT_PASSWORD", "")
+AUTHORIZED: set[str] = set()  # чаты, получившие доступ по паролю (хранятся в state.json)
+MAX_ATTEMPTS = 5
+LOCK_SECONDS = 3600
 
 BTN_NOW, BTN_DAY, BTN_WEEK, BTN_HELP = "📊 Сейчас", "📈 График за сутки", "📅 График за неделю", "ℹ️ Что это значит"
 KEYBOARD = {"keyboard": [[{"text": BTN_NOW}, {"text": BTN_DAY}], [{"text": BTN_WEEK}, {"text": BTN_HELP}]], "resize_keyboard": True}
@@ -79,7 +83,7 @@ def send(text, keyboard=True, chat=None):
     if not TOKEN or not CHATS:
         print("Telegram не настроен:", text)
         return
-    for target in ([chat] if chat else CHATS):
+    for target in ([chat] if chat else CHATS + sorted(AUTHORIZED - set(CHATS))):
         p = {"chat_id": target, "text": text}
         if keyboard:
             p["reply_markup"] = json.dumps(KEYBOARD)
@@ -280,7 +284,11 @@ def send_chart(state, hours, chat):
 
 def handle(text, state, chat):
     t = (text or "").strip()
-    if t in (BTN_NOW, "/status"):
+    if t == "/reset_access" and chat in CHATS:
+        AUTHORIZED.clear()
+        state["authorized"] = []
+        send("Доступ по паролю у всех, кроме владельца, закрыт. Чтобы открыть заново, смените пароль и сообщите его нужным людям.", chat=chat)
+    elif t in (BTN_NOW, "/status"):
         send(status_text(state), chat=chat)
     elif t in (BTN_DAY, "/day"):
         send_chart(state, 24, chat)
@@ -290,6 +298,31 @@ def handle(text, state, chat):
         send(HELP, chat=chat)
     elif t == "/start":
         send("Привет! Я слежу за сайтами Fattakhov HR Agency. Кнопки внизу: состояние, графики и пояснение.\n\n" + status_text(state))
+
+
+def try_password(m, chat_id, state):
+    """Чужой чат: доступ даёт только верный пароль. Неверные попытки считаются, после пяти чат молчит час."""
+    text = (m.get("text") or "").strip()
+    if not text or not PASSWORD or m.get("chat", {}).get("type") != "private":
+        return
+    attempts = state.setdefault("attempts", {})
+    count, locked_until = attempts.get(chat_id, [0, 0])
+    if time.time() < locked_until:
+        return
+    if hmac.compare_digest(text.encode("utf-8"), PASSWORD.encode("utf-8")):
+        AUTHORIZED.add(chat_id)
+        state["authorized"] = sorted(AUTHORIZED)
+        attempts.pop(chat_id, None)
+        # Сообщение с паролем из чата убираем
+        api("deleteMessage", {"chat_id": chat_id, "message_id": m.get("message_id")})
+        send("Доступ открыт. Кнопки внизу: состояние, графики, пояснение. Уведомления о падении сайтов будут приходить сюда.\n\n" + status_text(state), chat=chat_id)
+        return
+    count += 1
+    attempts[chat_id] = [count, time.time() + LOCK_SECONDS if count >= MAX_ATTEMPTS else 0]
+    if count >= MAX_ATTEMPTS:
+        send("Слишком много неверных попыток. Попробуйте через час.", keyboard=False, chat=chat_id)
+    else:
+        send("Введите пароль доступа к мониторингу.", keyboard=False, chat=chat_id)
 
 
 def listen(state, seconds):
@@ -303,10 +336,10 @@ def listen(state, seconds):
             offset = u["update_id"] + 1
             m = u.get("message") or {}
             chat_id = str(m.get("chat", {}).get("id"))
-            if chat_id not in CHATS:
-                # Чужому не показываем данные, только его номер: его можно передать владельцу, чтобы открыть доступ
-                if chat_id != "None" and m.get("text"):
-                    send(f"Доступ к мониторингу не открыт. Ваш номер: {chat_id}. Передайте его владельцу проекта.", keyboard=False, chat=chat_id)
+            if chat_id == "None":
+                continue
+            if chat_id not in CHATS and chat_id not in AUTHORIZED:
+                try_password(m, chat_id, state)
                 continue
             try:
                 handle(m.get("text"), state, chat_id)
@@ -320,6 +353,7 @@ def listen(state, seconds):
 
 def main():
     state = load()
+    AUTHORIZED.update(state.get("authorized", []))
     run_check(state)
     save(state)
     print("проблем:", len(state.get("problems", {})), state.get("problems", {}))
