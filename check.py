@@ -305,6 +305,9 @@ def try_password(m, chat_id, state):
     text = (m.get("text") or "").strip()
     if not text or not PASSWORD or m.get("chat", {}).get("type") != "private":
         return
+    if text == "/start":
+        send("Введите пароль доступа.", keyboard=False, chat=chat_id)
+        return
     attempts = state.setdefault("attempts", {})
     count, locked_until = attempts.get(chat_id, [0, 0])
     if time.time() < locked_until:
@@ -315,14 +318,11 @@ def try_password(m, chat_id, state):
         attempts.pop(chat_id, None)
         # Сообщение с паролем из чата убираем
         api("deleteMessage", {"chat_id": chat_id, "message_id": m.get("message_id")})
-        send("Доступ открыт. Кнопки внизу: состояние, графики, пояснение. Уведомления о падении сайтов будут приходить сюда.\n\n" + status_text(state), chat=chat_id)
+        send("Доступ открыт. Кнопки внизу: состояние, графики, пояснение. Уведомления о падении сайтов будут приходить сюда." + chr(10) + chr(10) + status_text(state), chat=chat_id)
         return
+    # Неверный текст бот не комментирует (молчит), но попытки считает: после пяти бот молчит с этим чатом час
     count += 1
     attempts[chat_id] = [count, time.time() + LOCK_SECONDS if count >= MAX_ATTEMPTS else 0]
-    if count >= MAX_ATTEMPTS:
-        send("Слишком много неверных попыток. Попробуйте через час.", keyboard=False, chat=chat_id)
-    else:
-        send("Введите пароль доступа к мониторингу.", keyboard=False, chat=chat_id)
 
 
 def listen(state, seconds):
